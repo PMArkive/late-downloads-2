@@ -280,7 +280,7 @@ int AddStaticDownloads(CUtlVector<const char*> const & filenames, CUtlVector<con
 	FOR_EACH_VEC(filenames, fit) {
 		const char * filename = filenames[fit];
 		if (g_pDownloadTable->FindStringIndex(filename) != INVALID_STRING_INDEX) {
-			OnDownloadSuccess(0, filename);
+			OnDownloadSuccess(-1, filename);
 			continue;
 		}
 		if (g_pDownloadTable->AddString(true, filename) == INVALID_STRING_INDEX) {
