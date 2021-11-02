@@ -50,13 +50,6 @@
 class CExtension : public SDKExtension, public IConCommandBaseAccessor, public IClientListener
 {
 public:
-	static void CheckClientUpload(int client);
-
-	virtual void OnClientPutInServer(int client) { return CheckClientUpload(client); }
-	//virtual void OnClientSettingsChanged(int client) { return CheckClientUpload(client); }
-
-	virtual void OnQueryCvarValueFinished(QueryCvarCookie_t iCookie, edict_t *pPlayerEntity, EQueryCvarValueStatus eStatus, const char *pCvarName, const char *pCvarValue);
-
 	virtual bool RegisterConCommandBase(ConCommandBase *pVar) {
 		return META_REGCVAR(pVar);
 	}
@@ -73,7 +66,7 @@ public:
 	 * @param late		Whether or not the module was loaded after map load.
 	 * @return			True to succeed loading, false to fail.
 	 */
-	//virtual bool SDK_OnLoad(char *error, size_t maxlength, bool late);
+	virtual bool SDK_OnLoad(char *error, size_t maxlength, bool late);
 	
 	/**
 	 * @brief This is called right before the extension is unloaded.

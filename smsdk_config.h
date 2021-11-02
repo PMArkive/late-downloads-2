@@ -38,10 +38,10 @@
  */
 
 /* Basic information exposed publicly */
-#define SMEXT_CONF_NAME			"Late Downloads"
+#define SMEXT_CONF_NAME			"Late Downloads: Sappy Edition"
 #define SMEXT_CONF_DESCRIPTION	"Transfer files to clients late in game."
-#define SMEXT_CONF_VERSION		"1.0.2.0"
-#define SMEXT_CONF_AUTHOR		"jonatan1024"
+#define SMEXT_CONF_VERSION		"2.0.0.0"
+#define SMEXT_CONF_AUTHOR		"jonatan1024, Sappykun"
 #define SMEXT_CONF_URL			"https://github.com/jonatan1024/latedl"
 #define SMEXT_CONF_LOGTAG		"LATEDL"
 #define SMEXT_CONF_LICENSE		"GPL"
@@ -63,7 +63,7 @@
 //#define SMEXT_ENABLE_HANDLESYS
 #define SMEXT_ENABLE_PLAYERHELPERS
 //#define SMEXT_ENABLE_DBMANAGER
-//#define SMEXT_ENABLE_GAMECONF
+#define SMEXT_ENABLE_GAMECONF
 //#define SMEXT_ENABLE_MEMUTILS
 #define SMEXT_ENABLE_GAMEHELPERS
 //#define SMEXT_ENABLE_TIMERSYS

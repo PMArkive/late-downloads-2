@@ -35,46 +35,63 @@
 #include <filesystem.h>
 #include <inetchannel.h>
 
-#include <utlvector.h>
-#include <UtlStringMap.h>
-#include <utlstring.h>
+//#include <utlvector.h>
+//#include <UtlStringMap.h>
+//#include <utlstring.h>
+
+//#include <IGameConfigs.h>
+#include <IBinTools.h>
+#include <sm_argbuffer.h>
+//#include "game/server/iplayerinfo.h"
+//#include <globalvars_base.h>
+//#include <edict.h>
 
 CExtension g_Extension;
 SMEXT_LINK(&g_Extension);
 
 INetworkStringTableContainer * g_pNSTC = NULL;
-
 INetworkStringTable *g_pDownloadTable = NULL;
 IBaseFileSystem * g_pBaseFileSystem = NULL;
 IServerPluginHelpers * g_pPluginHelpers = NULL;
 
-int g_TransferID = 0;
+IGameConfig *g_pGameConf = NULL;
+IBinTools *g_pBinTools = NULL;
+
+extern IGameConfigManager *gameconfs;
+
+ConVar g_cvFileTimeOut("latedl_filetimeout", "10.0", FCVAR_NONE, "Attempt to track LateDL files for this many seconds before giving up.");
+ConVar g_cvFileSizeCheckRate("latedl_filesizecheckrate", "7", FCVAR_NONE, "Only process LateDL files every X+1 frames. Anything lower than 0 checks every frame.");
+
+int g_TransferID = 1;
+int g_CurrentFrame = 0; // TODO: Figure out how to access the real frame count
+
+void *g_WaitingListAddr;
+bool g_bUseFallbackMethod = false;
+
+struct ActiveDownloadClient {
+	int id;
+	int transferId;
+	float timeStarted;
+};
 
 struct ActiveDownload {
 	CUtlString filename;
-	CUtlVector<int> clients;
-	float maximalDuration;
+	CUtlVector<ActiveDownloadClient> clients;
+	bool ignoreTimeout;
 };
 
 CUtlVector<ActiveDownload> g_ActiveDownloads;
-CUtlVector<float> g_BatchDeadlines;
 
 volatile const char * g_pFlaggedFile = NULL;
 
 SH_DECL_HOOK1_void(IServerGameDLL, GameFrame, SH_NOATTRIB, 0, bool);
 SH_DECL_HOOK2(IBaseFileSystem, Size, SH_NOATTRIB, 0, unsigned int, const char *, const char *);
-SH_DECL_HOOK5_void(IServerPluginCallbacks, OnQueryCvarValueFinished, SH_NOATTRIB, 0, QueryCvarCookie_t, edict_t *, EQueryCvarValueStatus, const char *, const char *);
 
 int g_GameFrameHookId = 0;
 int g_SizeHookId = 0;
-int g_OnQueryCvarValueFinishedHookId = 0;
 
 IForward *g_pOnDownloadSuccess = NULL;
 IForward *g_pOnDownloadFailure = NULL;
-
-ConVar g_MinimalBandwidth("latedl_minimalbandwidth", "64", FCVAR_NONE, "Kick clients with lower bandwidth (in kbps). Zero to disable.");
-ConVar g_MaximalDelay("latedl_maximaldelay", "500", FCVAR_NONE, "Acceptable additional delay (in ms) when sending files.");
-ConVar g_RequireUpload("latedl_requireupload", "1", FCVAR_NONE, "Kick clients with \"sv_allowupload\" = 0. Zero to disable.");
 
 bool CExtension::SDK_OnMetamodLoad(ISmmAPI *ismm, char *error, size_t maxlen, bool late) {
 	GET_V_IFACE_ANY(GetEngineFactory, g_pNSTC, INetworkStringTableContainer, INTERFACENAME_NETWORKSTRINGTABLESERVER);
@@ -106,43 +123,42 @@ bool CExtension::SDK_OnMetamodLoad(ISmmAPI *ismm, char *error, size_t maxlen, bo
 
 	g_GameFrameHookId = SH_ADD_VPHOOK(IServerGameDLL, GameFrame, gamedll, SH_MEMBER(this, &CExtension::OnGameFrame), false);
 	g_SizeHookId = SH_ADD_VPHOOK(IBaseFileSystem, Size, g_pBaseFileSystem, SH_MEMBER(this, &CExtension::OnSize), false);
-	g_OnQueryCvarValueFinishedHookId = SH_ADD_VPHOOK(IServerPluginCallbacks, OnQueryCvarValueFinished, serverPluginCallbacks, SH_MEMBER(this, &CExtension::OnQueryCvarValueFinished), false);
 	
 	ConVar_Register(0, this);
+	return true;
+}
+
+bool CExtension::SDK_OnLoad(char *error, size_t maxlen, bool late) {
+
+	char conf_error[255] = "";
+	
+	if (!gameconfs->LoadGameConfigFile("latedl.gamedata", &g_pGameConf, conf_error, sizeof(conf_error)))
+	{
+		if (conf_error[0])
+		{
+			//snprintf(error, maxlen, "Could not read latedl.gamedata.txt: %s\n", conf_error);
+			smutils->LogError(myself, "Could not read latedl.gamedata.txt: %s\n", conf_error);
+		}
+		g_bUseFallbackMethod = true;
+	}
+
+	if (!g_pGameConf->GetMemSig("CNetChan::IsFileInWaitingList", &g_WaitingListAddr) || !g_WaitingListAddr)
+	{
+		//snprintf(error, maxlen, "Could not find signature for CNetChan::IsFileInWaitingList.");
+		smutils->LogError(myself, "Could not find signature for CNetChan::IsFileInWaitingList.");
+		g_bUseFallbackMethod = true;
+	}
+
 	return true;
 }
 
 void CExtension::SDK_OnUnload() {
 	SH_REMOVE_HOOK_ID(g_GameFrameHookId);
 	SH_REMOVE_HOOK_ID(g_SizeHookId);
-	SH_REMOVE_HOOK_ID(g_OnQueryCvarValueFinishedHookId);
 	forwards->ReleaseForward(g_pOnDownloadSuccess);
 	forwards->ReleaseForward(g_pOnDownloadFailure);
 }
 
-void CExtension::OnQueryCvarValueFinished(QueryCvarCookie_t iCookie, edict_t *pPlayerEntity, EQueryCvarValueStatus eStatus, const char *pCvarName, const char *pCvarValue) {
-	if (!g_RequireUpload.GetBool())
-		return;
-	if (pCvarName == NULL || V_strcmp(pCvarName, "sv_allowupload") != 0)
-		return;
-	int clientIndex = gamehelpers->IndexOfEdict(pPlayerEntity);
-	if (eStatus != eQueryCvarValueStatus_ValueIntact || pCvarValue == NULL) {
-		gamehelpers->AddDelayedKick(clientIndex, playerhelpers->GetGamePlayer(pPlayerEntity)->GetUserId(), "Couldn't get value of sv_allowupload!");
-		return;
-	}
-	if (!V_atoi(pCvarValue)) {
-		gamehelpers->AddDelayedKick(clientIndex, playerhelpers->GetGamePlayer(pPlayerEntity)->GetUserId(), "You need to allow sv_allowupload!");
-	}
-}
-
-void CExtension::CheckClientUpload(int client) {
-	if (!g_RequireUpload.GetBool())
-		return;
-	edict_t * clientEdict = gamehelpers->EdictOfIndex(client);
-	if (g_pPluginHelpers->StartQueryCvarValue(clientEdict, "sv_allowupload") == InvalidQueryCvarCookie) {
-		gamehelpers->AddDelayedKick(client, playerhelpers->GetGamePlayer(clientEdict)->GetUserId(), "Couldn't get value of sv_allowupload!");
-	}
-}
 
 void OnDownloadSuccess(int iClient, const char * filename) {
 	//smutils->LogMessage(myself, "Client %d successfully downloaded file '%s'!", iClient, filename);
@@ -162,55 +178,91 @@ void OnDownloadFailure(int iClient, const char * filename) {
 	g_pOnDownloadFailure->Execute();
 }
 
-void CExtension::OnGameFrame(bool simulating) {
-	static float prevTime = Plat_FloatTime();
-	float time = Plat_FloatTime();
-	if (g_MinimalBandwidth.GetBool()) {
-		for (int iClient = 1; iClient <= playerhelpers->GetMaxClients(); iClient++) {
-			IGamePlayer * player = playerhelpers->GetGamePlayer(iClient);
-			if (player->IsConnected() && !player->IsInGame()) {
-				g_BatchDeadlines[iClient] += time - prevTime; //freeze time for connecting players
-			}
-		}
-	}
-	prevTime = time;
+bool IsFileInWaitingList(INetChannel *iChannel, const char* filename)
+{
+	static ICallWrapper *pWrapper = NULL;
 
+	// CNetChan::IsFileInWaitingList(const char* filename)
+	if (!pWrapper)
+	{
+		PassInfo pass[1];
+		pass[0].flags = PASSFLAG_BYVAL;
+		pass[0].size = sizeof(filename);
+		pass[0].type = PassType_Basic;
+		PassInfo ret;
+		ret.flags = PASSFLAG_BYVAL;
+		ret.size = sizeof(bool);
+		ret.type = PassType_Basic;
+		pWrapper = g_pBinTools->CreateCall(g_WaitingListAddr, CallConv_ThisCall, &ret, pass, 1);
+	}
+
+	ArgBuffer<INetChannel*, const char*> vstk(iChannel, filename);
+
+	bool returnBuffer;
+	pWrapper->Execute(vstk, &returnBuffer);
+	return returnBuffer;
+}
+
+void CExtension::OnGameFrame(bool simulating) {
+	g_CurrentFrame++;
+	float now = Plat_FloatTime();
+	
 	FOR_EACH_VEC(g_ActiveDownloads, dit) {
 		ActiveDownload& activeDownload = g_ActiveDownloads[dit];
 		const char * filename = activeDownload.filename;
 		FOR_EACH_VEC(activeDownload.clients, cit) {
-			int iClient = activeDownload.clients[cit];
+			int iClient = activeDownload.clients[cit].id;
+			
+			// Optimization test - don't try to send a file every frame.
+			if (g_cvFileSizeCheckRate.GetInt() > 0 && g_CurrentFrame % g_cvFileSizeCheckRate.GetInt() != iClient % g_cvFileSizeCheckRate.GetInt())
+				continue;
+			
 			INetChannel * chan = (INetChannel*)engine->GetPlayerNetInfo(iClient);
 			bool resendSuccess;
+
 			if (!chan) {
 				smutils->LogError(myself, "Lost client %d when sending file '%s'!", iClient, filename);
 				OnDownloadFailure(iClient, filename);
 				goto deactivate;
 			}
 			
-			//Iä! Iä! Cthulhu fhtagn!
-			g_pFlaggedFile = filename;
-#ifdef DEMO_AWARE
-			resendSuccess = chan->SendFile(filename, g_TransferID++, false);
-#else
-			resendSuccess = chan->SendFile(filename, g_TransferID++);
-#endif
-			if (!resendSuccess) {
-				smutils->LogError(myself, "Failed to track progress of sending file '%s' to client %d ('%s', %s)!", filename, iClient, chan->GetName(), chan->GetAddress());
+			if (!activeDownload.ignoreTimeout && now - activeDownload.clients[cit].timeStarted > g_cvFileTimeOut.GetFloat()) {
+				smutils->LogMessage(myself, "Client %s timed out receiving file %s (%d)", chan->GetName(), filename, activeDownload.clients[cit].transferId);
 				OnDownloadFailure(iClient, filename);
 				goto deactivate;
 			}
-			if (g_pFlaggedFile != NULL) {
-				g_pFlaggedFile = NULL;
-				if (activeDownload.maximalDuration <= 0 || time <= g_BatchDeadlines[iClient])
-					continue; //still queued, all ok!
-				smutils->LogError(myself, "Client %d ('%s', %s) had insufficient bandwidth (<%d kbps), failed to receive '%s' in time! Kicking!", iClient, chan->GetName(), chan->GetAddress(), g_MinimalBandwidth.GetInt(), filename);
-				OnDownloadFailure(iClient, filename);
-				playerhelpers->GetGamePlayer(gamehelpers->EdictOfIndex(iClient))->Kick("You have insufficient bandwidth!");
-				goto deactivate;
-			}
+			
+			if (g_bUseFallbackMethod) {
 
+				g_pFlaggedFile = filename;
+			
+#ifdef DEMO_AWARE
+				resendSuccess = chan->SendFile(filename, activeDownload.clients[cit].transferId, false);
+#else
+				resendSuccess = chan->SendFile(filename, activeDownload.clients[cit].transferId);
+#endif
+
+				if (!resendSuccess) {
+					smutils->LogError(myself, "Failed to track progress of sending file '%s' to client %d ('%s', %s)!", filename, iClient, chan->GetName(), chan->GetAddress());
+					OnDownloadFailure(iClient, filename);
+					goto deactivate;
+				}
+			
+				if (g_pFlaggedFile != NULL) {
+					g_pFlaggedFile = NULL;
+					continue;
+				}
+			} else {
+				bool wl = IsFileInWaitingList(chan, filename);
+				smutils->LogMessage(myself, "IsFileInWaitingList: %d %s (%d)", iClient, filename, wl);
+				if (wl) {
+					continue;
+				}
+			}
+			
 			OnDownloadSuccess(iClient, filename);
+			goto deactivate;
+			
 		deactivate:
 			activeDownload.clients.FastRemove(cit);
 			//reset iterator
@@ -226,6 +278,7 @@ void CExtension::OnGameFrame(bool simulating) {
 	}
 }
 
+
 /*
 To clarify what is going on:
 Inside the INetChannel::Sendfile() function, several calls to other functions are made.
@@ -239,7 +292,7 @@ We can tell that by listening on one of the subsequent calls.
 One of these calls gets the size of the file we're trying to send.
 If this function gets called with our file in parameter, we know that the client have already received the file.
 
-At this moment, we could for example claim that the file doesn't exists.
+At this moment, we could for example claim that the file doesn't exist.
 That would prevent the file from being re-send to the client, but would cause an error message in the server log.
 
 We could also do nothing at all, letting the client re-download the file.
@@ -267,9 +320,7 @@ void CExtension::OnCoreMapStart(edict_t *pEdictList, int edictCount, int clientM
 	if (!ReloadDownloadTable())
 		smutils->LogError(myself, "Couldn't load download table!");
 	g_ActiveDownloads.RemoveAll();
-	g_BatchDeadlines.RemoveAll();
 	float zero = 0;
-	g_BatchDeadlines.AddMultipleToTail(clientMax + 1, &zero);
 }
 
 int AddStaticDownloads(CUtlVector<const char*> const & filenames, CUtlVector<const char *> * addedFiles) {
@@ -298,10 +349,7 @@ int AddStaticDownloads(CUtlVector<const char*> const & filenames, CUtlVector<con
 	return added;
 }
 
-int SendFiles(CUtlVector<const char*> const & filenames, int targetClient = 0) {
-	int minimalBandwidth = g_MinimalBandwidth.GetInt();
-	int maximalDelay = g_MaximalDelay.GetInt();
-	float now = Plat_FloatTime();
+int SendFiles(CUtlVector<const char*> const & filenames, int targetClient = 0, bool ignoreTimeout = false) {
 	int firstClient = targetClient > 0 ? targetClient : 1;
 	int lastClient = targetClient > 0 ? targetClient : playerhelpers->GetMaxClients();
 
@@ -309,13 +357,11 @@ int SendFiles(CUtlVector<const char*> const & filenames, int targetClient = 0) {
 	FOR_EACH_VEC(filenames, fit) {
 		const char * filename = filenames[fit];
 		bool failed = false;
+		
 		ActiveDownload& activeDownload = g_ActiveDownloads[g_ActiveDownloads.AddToTail()];
 		activeDownload.filename = filename;
-		activeDownload.maximalDuration = 0;
-		if (minimalBandwidth > 0) {
-			int numBytes = g_pBaseFileSystem->Size(filename);
-			activeDownload.maximalDuration = 0.001f * maximalDelay + (numBytes * 8) / (minimalBandwidth * 1000.f);
-		}
+		activeDownload.ignoreTimeout = ignoreTimeout;
+
 		for (int iClient = firstClient; iClient <= lastClient; iClient++)
 		{
 			INetChannel * chan = (INetChannel*)engine->GetPlayerNetInfo(iClient);
@@ -330,11 +376,11 @@ int SendFiles(CUtlVector<const char*> const & filenames, int targetClient = 0) {
 #else
 			if (chan->SendFile(filename, g_TransferID)) {
 #endif
-				g_TransferID++;
-				activeDownload.clients.AddToTail(iClient);
-				if (g_BatchDeadlines[iClient] < now)
-					g_BatchDeadlines[iClient] = now;
-				g_BatchDeadlines[iClient] += activeDownload.maximalDuration;
+				ActiveDownloadClient& client = activeDownload.clients[activeDownload.clients.AddToTail()];
+				
+				client.id = iClient;
+				client.transferId = g_TransferID++;
+				client.timeStarted = Plat_FloatTime();
 			}
 			else {
 				failed = true;
@@ -342,19 +388,21 @@ int SendFiles(CUtlVector<const char*> const & filenames, int targetClient = 0) {
 		}
 		if (failed) {
 			if (activeDownload.clients.Count() > 0) {
-				smutils->LogError(myself, "This shouldn't have happend! The file %d '%s' have been succesfully sent to some clients, but not to the others. Please inform the author of this extension that this happend!", g_TransferID, filename);
+				smutils->LogError(myself, "This shouldn't have happened! The file %d '%s' have been succesfully sent to some clients, but not to the others. Please inform the author of this extension that this happened!", g_TransferID, filename);
 				//provide some info for unfortunate future me
 				for (int iClient = firstClient; iClient <= lastClient; iClient++) {
 					INetChannel * chan = (INetChannel*)engine->GetPlayerNetInfo(iClient);
 					if (!chan)
 						continue;
 					//this is probably slow
-					if (activeDownload.clients.HasElement(iClient)) {
-						smutils->LogError(myself, "Additional info: Good client %d ('%s', %s)!", iClient, chan->GetName(), chan->GetAddress());
-					}
-					else {
-						smutils->LogError(myself, "Additional info: Bad client %d ('%s', %s)!", iClient, chan->GetName(), chan->GetAddress());
-						OnDownloadFailure(iClient, filename);
+					FOR_EACH_VEC(activeDownload.clients, cit) {
+						if (activeDownload.clients[cit].id == iClient) {
+							smutils->LogError(myself, "Additional info: Good client %d ('%s', %s)!", iClient, chan->GetName(), chan->GetAddress());
+						}
+						else {
+							smutils->LogError(myself, "Additional info: Bad client %d ('%s', %s)!", iClient, chan->GetName(), chan->GetAddress());
+							OnDownloadFailure(iClient, filename);
+						}
 					}
 				}
 				sent++;
@@ -370,21 +418,14 @@ int SendFiles(CUtlVector<const char*> const & filenames, int targetClient = 0) {
 		}
 	}
 
-	if (g_RequireUpload.GetBool()) {
-		//poll sv_allowupload value
-		for (int iClient = firstClient; iClient <= lastClient; iClient++)
-		{
-			if(engine->GetPlayerNetInfo(iClient))
-				CExtension::CheckClientUpload(iClient);
-		}
-	}
-
 	return sent;
 }
 
+
+
 cell_t AddLateDownloads(IPluginContext *pContext, const cell_t *params) {
 	int argc = params[0];
-	if (argc != 4)
+	if (argc != 5)
 		return 0;
 	cell_t * fileArray = NULL;
 	pContext->LocalToPhysAddr(params[1], &fileArray);
@@ -403,6 +444,7 @@ cell_t AddLateDownloads(IPluginContext *pContext, const cell_t *params) {
 
 	bool addToDownloadsTable = !!params[3];
 	int iClient = params[4];
+	bool ignoreTimeout = !!params[5];
 	
 	CUtlVector<const char *> addedFiles(0, 0);
 	CUtlVector<const char *> * addedFilesPtr = &filenames;
@@ -414,13 +456,13 @@ cell_t AddLateDownloads(IPluginContext *pContext, const cell_t *params) {
 			return 0;
 	}
 
-	int sent = SendFiles(*addedFilesPtr, iClient);
+	int sent = SendFiles(*addedFilesPtr, iClient, ignoreTimeout);
 	return sent;
 }
 
 cell_t AddLateDownload(IPluginContext *pContext, const cell_t *params) {
 	int argc = params[0];
-	if (argc != 3)
+	if (argc != 4)
 		return 0;
 
 	char * str;
@@ -431,13 +473,14 @@ cell_t AddLateDownload(IPluginContext *pContext, const cell_t *params) {
 
 	bool addToDownloadsTable = !!params[2];
 	int iClient = params[3];
+	bool ignoreTimeout = !!params[4];
 	
 	if (addToDownloadsTable) {
 		int added = AddStaticDownloads(filenames, NULL);
 		if (added == 0)
 			return 0;
 	}
-	int sent = SendFiles(filenames, iClient);
+	int sent = SendFiles(filenames, iClient, ignoreTimeout);
 	return sent;
 }
 
@@ -449,6 +492,9 @@ const sp_nativeinfo_t g_Natives[] =
 };
 
 void CExtension::SDK_OnAllLoaded() {
+	
+	SM_GET_LATE_IFACE(BINTOOLS, g_pBinTools);
+	
 	sharesys->AddNatives(myself, g_Natives);
 	g_pOnDownloadSuccess = forwards->CreateForward("OnDownloadSuccess", ET_Ignore, 2, NULL, Param_Cell, Param_String);
 	g_pOnDownloadFailure = forwards->CreateForward("OnDownloadFailure", ET_Ignore, 2, NULL, Param_Cell, Param_String);

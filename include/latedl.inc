@@ -7,7 +7,7 @@
  * @param iClient		When nonzero, files will be sent only to this client.
  * @return				Number of successfully added files.
  */
-native int AddLateDownloads(char[][] filenames, int numFiles, bool addAsStatic = true, int iClient = 0);
+native int AddLateDownloads(char[][] filenames, int numFiles, bool addAsStatic = true, int iClient = 0, bool ignoreTimeout = false);
 
 /**
  * Enqueues single file to be sent to all connected clients.
@@ -17,7 +17,7 @@ native int AddLateDownloads(char[][] filenames, int numFiles, bool addAsStatic =
  * @param iClient		When nonzero, file will be sent only to this client.
  * @return				Whether the file was successfully added.
  */
-native bool AddLateDownload(char[] filename, bool addAsStatic = true, int iClient = 0);
+native bool AddLateDownload(char[] filename, bool addAsStatic = true, int iClient = 0, bool ignoreTimeout = false);
 
 /**
  * Called when client successfully downloaded a file. This forward might be called before AddLateDownload(s) returns!
