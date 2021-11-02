@@ -1,6 +1,7 @@
-# Late Downloads
+# Late Downloads 2 (Sappy Edition)
 ## What is this?
 This is a [SourceMod](http://www.sourcemod.net/) extension that allows file transfers to players that are already in the game.
+Specifically, this is a fork of [jonatan1024's version](https://github.com/jonatan1024/latedl).
 ## How to build this?
 Just as any other [AMBuild](https://wiki.alliedmods.net/AMBuild) project:
 1. [Install AMBuild](https://wiki.alliedmods.net/AMBuild#Installation)
@@ -56,17 +57,12 @@ public Action Command_TestDL(int client, int args)
 }
 ```
 ## Extension configuration
-The extension exposes following cvars:
-* `latedl_minimalbandwidth` (default = 64) - Kick clients with lower bandwidth (in kbps). Zero to disable.
-* `latedl_maximaldelay` (default = 500) - Acceptable additional delay (in ms) when sending files.
-* `latedl_requireupload` (default = 1) - Kick clients with "sv_allowupload" = 0. Zero to disable.
+The extension exposes the following cvars:
+* `latedl_filetimeout` (default = 10) - Flag downloads as failed after this many seconds.
+* `latedl_filesizecheckrate` (default = 7) - How often to check for file status.
 
-The first two cvars limit the maximal time that the download can take. The maximal duration (in seconds) is computed using following formula: `maximalDelay / 1000 + (fileSizeInBytes * 8) / (minimalBandwidth * 1000)`
+These cvars only come into effect if `CNetChan::IsFileInWaitingList` is not found in the supplied gamedata file.  Checking the file sending queue is much less resource intensive, but requires a bit of memory patching since the function is not publicly exposed.
 
-If the player fails to download the file in time, he's kicked.
-
-The last cvar kicks any player that rejects incoming files.
 ## Additional information
-* This was tested only in CS:GO, but any modern Source game (OrangeBox+) should be ok.
-* This extension used to be a part of the [Gorme](https://github.com/jonatan1024/gorme) project.
-* 8. 2. 2018 Valve torpedoed this extension by [defaulting sv_allowupload to zero](http://blog.counter-strike.net/index.php/2018/02/20051/).
+* This was only tested in TF2 and L4D2, but any modern Source game (OrangeBox+) should be ok.
+* This extension (the original version) used to be a part of the [Gorme](https://github.com/jonatan1024/gorme) project.
