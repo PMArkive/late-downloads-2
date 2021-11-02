@@ -254,7 +254,7 @@ void CExtension::OnGameFrame(bool simulating) {
 				}
 			} else {
 				bool wl = IsFileInWaitingList(chan, filename);
-				smutils->LogMessage(myself, "IsFileInWaitingList: %d %s (%d)", iClient, filename, wl);
+				//smutils->LogMessage(myself, "IsFileInWaitingList: %d %s (%d)", iClient, filename, wl);
 				if (wl) {
 					continue;
 				}
