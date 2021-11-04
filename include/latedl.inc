@@ -7,7 +7,7 @@
  * @param iClient		When nonzero, files will be sent only to this client.
  * @return				Number of successfully added files.
  */
-native int AddLateDownloads(char[][] filenames, int numFiles, bool addAsStatic = true, int iClient = 0, bool ignoreTimeout = false);
+native int AddLateDownloads(const char[][] filenames, int numFiles, bool addAsStatic = true, int iClient = 0, bool ignoreTimeout = false);
 
 /**
  * Enqueues single file to be sent to all connected clients.
@@ -17,7 +17,7 @@ native int AddLateDownloads(char[][] filenames, int numFiles, bool addAsStatic =
  * @param iClient		When nonzero, file will be sent only to this client.
  * @return				Whether the file was successfully added.
  */
-native bool AddLateDownload(char[] filename, bool addAsStatic = true, int iClient = 0, bool ignoreTimeout = false);
+native bool AddLateDownload(const char[] filename, bool addAsStatic = true, int iClient = 0, bool ignoreTimeout = false);
 
 /**
  * Called when client successfully downloaded a file. This forward might be called before AddLateDownload(s) returns!
@@ -25,7 +25,7 @@ native bool AddLateDownload(char[] filename, bool addAsStatic = true, int iClien
  * @param iClient		Client index. Index 0 signals removal of the file from the download queue - all clients downloaded or failed to download the file.  
  * @param filename		Name of the successfully downloaded file. 
  */
-forward void OnDownloadSuccess(int iClient, char[] filename);
+forward void OnDownloadSuccess(int iClient, const char[] filename);
 
 /**
  * Called when client failed to download a file. This forward might be called before AddLateDownload(s) returns! Check the server console for detailed failure reason!
@@ -33,7 +33,7 @@ forward void OnDownloadSuccess(int iClient, char[] filename);
  * @param iClient		Client index. Index 0 signals that an error occured when adding the file to the download queue.
  * @param filename		Name of the successfully downloaded file. 
  */
-forward void OnDownloadFailure(int iClient, char[] filename);
+forward void OnDownloadFailure(int iClient, const char[] filename);
 
 /**
  * Do not edit below this line!
