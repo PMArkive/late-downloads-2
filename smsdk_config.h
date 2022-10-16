@@ -40,7 +40,7 @@
 /* Basic information exposed publicly */
 #define SMEXT_CONF_NAME			"Late Downloads: Sappy Edition"
 #define SMEXT_CONF_DESCRIPTION	"Transfer files to clients late in game."
-#define SMEXT_CONF_VERSION		"1.1.0.0s"
+#define SMEXT_CONF_VERSION		"1.1.0.1s"
 #define SMEXT_CONF_AUTHOR		"jonatan1024, Sappykun"
 #define SMEXT_CONF_URL			"https://gitgud.io/sappykun/late-downloads-2"
 #define SMEXT_CONF_LOGTAG		"LATEDL-S"
